@@ -23,6 +23,9 @@ import os
 import volatility.obj as obj
 import volatility.utils as utils
 import volatility.plugins.taskmods as taskmods
+import volatility.debug as debug
+from volatility.renderers import TreeGrid
+from volatility.renderers.basic import Address
 
 #--------------------------------------------------------------------------------
 # object classes 
@@ -180,6 +183,47 @@ class Notepad(taskmods.DllList):
     def is_valid_profile(profile):
         return (profile.metadata.get('os', 'unknown') == 'windows' and
                 profile.metadata.get('major', 0) == 5)
+
+    def generator(self, data):
+        for task in data:
+
+            # only looking for notepad
+            if str(task.ImageFileName).lower() != "notepad.exe":
+                continue
+
+            pid = task.UniqueProcessId
+            entry_size = task.obj_vm.profile.get_obj_size("_HEAP_ENTRY")
+            heap = task.Peb.ProcessHeap.dereference_as("_HEAP")
+
+            for segment in heap.segments():
+                for entry in segment.heap_entries():
+
+                    # the extra heap data is present
+                    if "extra" not in str(entry.Flags):
+                        continue
+
+                    text = obj.Object("String",
+                                     offset = entry.obj_offset + entry_size,
+                                     vm = task.get_process_address_space(),
+                                     length = entry.Size * entry_size,
+                                     encoding = "utf16")
+
+                    if not text or len(text) == 0:
+                        continue
+
+                    if self._config.DUMP_DIR:
+                        name = "notepad.{0}.txt".format(task.UniqueProcessId)
+                        path = os.path.join(self._config.DUMP_DIR, name)
+                        with open(path, "wb") as handle:
+                            handle.write(entry.get_data())
+                        debug.info("Dumped To: {0}\n".format(path))
+
+                    yield (0, [int(pid), str(text)])
+
+    def unified_output(self, data):
+        return TreeGrid([("PID", int),
+                         ("Text", str)],
+                        self.generator(data))
 
     def render_text(self, outfd, data):
         for task in data:
